@@ -9,7 +9,10 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWoker;
 import com.hmdp.utils.UserHolder;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +35,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private RedisIdWoker redisIdWoker;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private RedissonClient redissonClient;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -62,11 +71,32 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         // 将同步锁加在 userid 对象上 减少不必要的同步锁
         // 事物的提交要放在锁内 避免锁释放后事物还没有提交
         // 事物是通过代理对象才生效
-        synchronized (userId.toString().intern()) {
+//        synchronized (userId.toString().intern()) {
+//
+//            // 获取代理对象（事物）
+//            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+//            return proxy.createVoucherOrder(voucherId);
+//        }
 
+        // 获取分布式锁
+//        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+//        boolean isLock = lock.tryLock(1200);
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+        // 三个参数 获取锁最大等待时间（期间会重试） 锁自动释放时间  时间单位
+        boolean isLock = lock.tryLock();
+
+        if (!isLock) {
+            // 获取锁失败
+            return Result.fail("不允许重复下单");
+        }
+
+        try {
             // 获取代理对象（事物）
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
+        } finally {
+            // 手动释放锁
+            lock.unlock();
         }
     }
 
